@@ -449,9 +449,19 @@ function generate_steps(dep::LibraryDependency, h::Autotools,  provider_opts)
     @show haskey(opts,:installed_libpath)
     if haskey(opts,:installed_libname)
         !haskey(opts,:installed_libpath) || error("Can't specify both installed_libpath and installed_libname")
+        @show libdir(dep)
+        @show opts[:installed_libname]
+        @show joinpath(libdir(dep),opts[:installed_libname])
+        @show ByteString[joinpath(libdir(dep),opts[:installed_libname])]
         opts[:installed_libpath] = ByteString[joinpath(libdir(dep),opts[:installed_libname])]
         delete!(opts, :installed_libname)
     elseif !haskey(opts,:installed_libpath)
+    @show libdir(dep)
+    @show get(dep.properties,:aliases,ByteString[])
+    for x in get(dep.properties,:aliases,ByteString[])
+        @show x
+    end
+    @show dlext
         opts[:installed_libpath] = ByteString[joinpath(libdir(dep),x)*"."*dlext for x in get(dep.properties,:aliases,ByteString[])]
     end
     @show haskey(opts,:libtarget)
