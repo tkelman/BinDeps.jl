@@ -422,19 +422,31 @@ function generate_steps(dep::LibraryDependency,method)
 end
 
 function generate_steps(dep::LibraryDependency, h::Autotools,  provider_opts)
+@show dep
+@show h
+@show provider_opts
+@show h.source
     if is(h.source, nothing)
         h.source = gethelper(dep,Sources)
+        @show h.source
     end
     if isa(h.source,Sources)
         h.source = (h.source,Dict{Symbol,Any}())
+        @show h.source
     end
     is(h.source[1], nothing) && error("Could not obtain sources for dependency $(dep.name)")
+    @show generate_steps(dep,h.source...)
+    @show lower(generate_steps(dep,h.source...))
     steps = lower(generate_steps(dep,h.source...))
+    @show steps
     opts = Dict()
     opts[:srcdir]   = srcdir(dep,h.source...)
     opts[:prefix]   = usrdir(dep)
     opts[:builddir] = joinpath(builddir(dep),dep.name)
+    @show opts
     merge!(opts,h.opts)
+    @show haskey(opts,:installed_libname)
+    @show haskey(opts,:installed_libpath)
     if haskey(opts,:installed_libname)
         !haskey(opts,:installed_libpath) || error("Can't specify both installed_libpath and installed_libname")
         opts[:installed_libpath] = ByteString[joinpath(libdir(dep),opts[:installed_libname])]
@@ -442,14 +454,19 @@ function generate_steps(dep::LibraryDependency, h::Autotools,  provider_opts)
     elseif !haskey(opts,:installed_libpath)
         opts[:installed_libpath] = ByteString[joinpath(libdir(dep),x)*"."*dlext for x in get(dep.properties,:aliases,ByteString[])]
     end
+    @show haskey(opts,:libtarget)
+    @show haskey(dep.properties,:alias)
     if !haskey(opts,:libtarget) && haskey(dep.properties,:aliases)
         opts[:libtarget] = ByteString[x*"."*dlext for x in dep.properties[:aliases]]
+        @show opts[:libtarget]
     end
     if !haskey(opts,:include_dirs)
         opts[:include_dirs] = AbstractString[]
+        @show opts[:include_dirs]
     end
     if !haskey(opts,:lib_dirs)
         opts[:lib_dirs] = AbstractString[]
+        @show opts[:lib_dirs]
     end
     if !haskey(opts,:pkg_config_dirs)
         opts[:pkg_config_dirs] = AbstractString[]
@@ -458,12 +475,17 @@ function generate_steps(dep::LibraryDependency, h::Autotools,  provider_opts)
         opts[:rpath_dirs] = AbstractString[]
     end
     if haskey(opts,:configure_subdir)
+    @show opts[:srcdir]
+    @show opts[:configure_subdir]
+    @show joinpath(opts[:srcdir],opts[:configure_subdir])
         opts[:srcdir] = joinpath(opts[:srcdir],opts[:configure_subdir])
         delete!(opts, :configure_subdir)
     end
     unshift!(opts[:include_dirs],includedir(dep))
     unshift!(opts[:lib_dirs],libdir(dep))
     unshift!(opts[:rpath_dirs],libdir(dep))
+    @show libdir(dep)
+    @show joinpath(libdir(dep),"pkgconfig")
     unshift!(opts[:pkg_config_dirs],joinpath(libdir(dep),"pkgconfig"))
     env = Dict{ByteString,ByteString}()
     env["PKG_CONFIG_PATH"] = join(opts[:pkg_config_dirs],":")
