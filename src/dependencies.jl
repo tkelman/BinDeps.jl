@@ -814,8 +814,8 @@ function satisfy!(dep::LibraryDependency, methods = defaults)
                     run(lower(generate_steps(ddep,dp,dopts)))
                 end
             end
-            @show generate_steps(dep,p,dopts)
-            @show lower(generate_steps(dep,p,dopts))
+            @show generate_steps(dep,p,opts)
+            @show lower(generate_steps(dep,p,opts))
             run(lower(generate_steps(dep,p,opts)))
             @show issatisfied(dep)
             !issatisfied(dep) && error("Provider $method failed to satisfy dependency $(dep.name)")
