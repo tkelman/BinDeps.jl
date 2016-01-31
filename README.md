@@ -1,6 +1,8 @@
 BinDeps.jl
 ==========
 
+[![Build Status](https://travis-ci.org/JuliaLang/BinDeps.jl.svg?branch=master)](https://travis-ci.org/JuliaLang/BinDeps.jl)
+
 Easily build binary dependencies for Julia packages 
 
 # FAQ
@@ -33,7 +35,7 @@ the actual package, I want to answer a few common questions:
 
     Since BinDeps is written in Julia it is extensible with the same ease as the rest of Julia. In particular, defining new behavior,
     e.g. for adding a new package manger, consists of little more than
-    adding a type and implementing a couple of methods (see the section on Interfaces) or the RPMmd package for an example implementation. 
+    adding a type and implementing a couple of methods (see the section on Interfaces) or the [WinRPM package](https://github.com/JuliaLang/WinRPM.jl) for an example implementation. 
 
   * I like the runtime features that BinDeps provides, but I don't 
     really want to use its build time capabilities. What do you 
@@ -148,7 +150,7 @@ defined the following dependencies:
 ```
 
 Let's suppose that these libraries are available in the `libfoo-dev` and `libbaz-dev`
-in apt-get and that both libraries are installed by the `libbaz` yum package. We may
+in apt-get and that both libraries are installed by the `baz` or the `baz1` yum package, and the `baz` pacman package. We may
 declare this as follows:
 
 ```julia
@@ -156,8 +158,8 @@ declare this as follows:
 		"libfoo-dev" => foo,
 		"libbaz-dev" => baz,
 	})
-	provides(Yum,"libbaz",[foo,baz])
-}
+	provides(Yum,["baz","baz1"],[foo,baz])
+	provides(Pacman,"baz",[foo,baz])
 ```
 
 One may remember the `provides` function by thinking `AptGet` `provides` the dependencies `foo` and `baz`. 
@@ -180,7 +182,7 @@ which is equivalent to (and in fact will be internally dispatched) to:
 ```
 
 If one provide satisfied multiple dependencies simultaneously, `dependency` may 
-also be an array of dependencies (as in the `Yum` case above). 
+also be an array of dependencies (as in the `Yum` and `Pacman` cases above). 
 
 There are also several builtin options. Some of them are:
 
@@ -189,6 +191,15 @@ There are also several builtin options. Some of them are:
  	This provider can only satisfy the library dependency on the specified `os`. 
  	This argument takes has the same syntax as the `os` keyword argument to \
 	`library_dependency`.
+
+ * `installed_libpath = "path"`
+
+ 	If the provider installs a library dependency to someplace other than the
+ 	standard search paths, that location can be specified here.
+
+ * `SHA = "sha"`
+
+  Provides a SHA-256 checksum to validate a downloaded source or binary file against.
 
 # The high level interface - built in providers
 
@@ -242,7 +253,8 @@ initialization process of your package to load all declared libraries in your bu
 file. 
 
 The basic usage is very simple:
-```
+
+```jl
 using BinDeps
 @BinDeps.load_dependencies
 ```
@@ -277,7 +289,7 @@ which will assign the result to the `_foo` and `_bar` variables instead.
    The low level interface provides a number of utilities to write cross platform 
    build scripts. It looks something like this (from the Cairo build script):
 
-```julia
+```jl
 	@build_steps begin
 		GetSources(libpng)
 		CreateDirectory(pngbuilddir)
@@ -296,6 +308,8 @@ which will assign the result to the `_foo` and `_bar` variables instead.
 		end
 	end
 ```
+
+
     All the steps are executed synchronously. The result of the `@build_steps` macro 
     may be passed to run to execute it directly, thought this is not recommended other
     than for debugging purposes. Instead, please use the high level interface to tie 
@@ -309,7 +323,7 @@ which will assign the result to the `_foo` and `_bar` variables instead.
 
   * FileUnpacker(local_file,folder)
 
-    Unpack the file `local_file` into the folder `folder`
+    	Unpack the file `local_file` into the folder `folder`
 
   * AutotoolsDependency(opts...)
 
@@ -342,3 +356,29 @@ which will assign the result to the `_foo` and `_bar` variables instead.
 
   	Get the declared sources from the dependency dep and put them in the default 
   	download location
+
+# Diagnostics
+
+A simple way to see what libraries are required by a package, and to detect missing dependencies,
+is to use `BinDeps.debug("PackageName")`:
+
+```
+julia> using BinDeps
+
+julia> BinDeps.debug("Cairo")
+INFO: Reading build script...
+The package declares 1 dependencies.
+ - Library Group "cairo" (satisfied by BinDeps.SystemPaths, BinDeps.SystemPaths)
+     - Library "png" (not applicable to this system)
+     - Library "pixman" (not applicable to this system)
+     - Library "ffi" (not applicable to this system)
+     - Library "gettext"
+        - Satisfied by:
+          - System Paths at /usr/lib64/preloadable_libintl.so
+          - System Paths at /usr/lib64/libgettextpo.so
+        - Providers:
+          - BinDeps.AptGet package gettext (can't provide)
+          - BinDeps.Yum package gettext-libs (can't provide)
+          - Autotools Build
+...
+```

@@ -1,32 +1,34 @@
+isdefined(Base, :__precompile__) && __precompile__()
 module BinDeps
     importall Base
+    using Compat
 
     export @make_run, @build_steps, find_library, download_cmd, unpack_cmd,
             Choice, Choices, CCompile, FileDownloader, FileRule,
             ChangeDirectory, FileDownloader, FileUnpacker, prepare_src,
             autotools_install, CreateDirectory, MakeTargets, SystemLibInstall
 
-    const dlext = isdefined(Base.Sys, :shlib_ext) ? Base.Sys.shlib_ext : Base.Sys.dlext # Julia 0.2/0.3 compatibility
+    const dlext = Libdl.dlext
     const shlib_ext = dlext # compatibility with older packages (e.g. ZMQ)
 
     function find_library(pkg,libname,files)
         Base.warn_once("BinDeps.find_library is deprecated, use Base.find_library instead.")
         dl = C_NULL
         for filename in files
-            dl = dlopen_e(joinpath(Pkg.dir(),pkg,"deps","usr","lib",filename))
+            dl = Libdl.dlopen_e(joinpath(Pkg.dir(),pkg,"deps","usr","lib",filename))
             if dl != C_NULL
                 ccall(:add_library_mapping,Cint,(Ptr{Cchar},Ptr{Void}),libname,dl)
                 return true
             end
-               
-            dl = dlopen_e(filename)
+
+            dl = Libdl.dlopen_e(filename)
             if dl != C_NULL
                 ccall(:add_library_mapping,Cint,(Ptr{Cchar},Ptr{Void}),libname,dl)
                 return true
-            end                
+            end
         end
 
-        dl = dlopen_e(libname)
+        dl = Libdl.dlopen_e(libname)
         dl != C_NULL ? true : false
     end
 
@@ -42,13 +44,18 @@ module BinDeps
     abstract BuildStep
 
     downloadcmd = nothing
-    function download_cmd(url::String, filename::String)
+    function download_cmd(url::AbstractString, filename::AbstractString)
         global downloadcmd
         if downloadcmd === nothing
-            for checkcmd in (:curl, :wget, :fetch)
+            for download_engine in @windows? (:powershell, :curl, :wget, :fetch) : (:curl, :wget, :fetch)
+                if download_engine == :powershell
+                    checkcmd = `$download_engine -help`
+                else
+                    checkcmd = `$download_engine --help`
+                end
                 try
-                    if success(`$checkcmd --help`)
-                        downloadcmd = checkcmd
+                    if success(checkcmd)
+                        downloadcmd = download_engine
                         break
                     end
                 catch
@@ -59,9 +66,11 @@ module BinDeps
         if downloadcmd == :wget
             return `wget -O $filename $url`
         elseif downloadcmd == :curl
-            return `curl -o $filename -L $url`
+            return `curl -f -o $filename -L $url`
         elseif downloadcmd == :fetch
             return `fetch -f $filename $url`
+        elseif downloadcmd == :powershell
+            return `powershell -Command "(new-object net.webclient).DownloadFile(\"$url\", \"$filename\")"`
         else
             error("No download agent available; install curl, wget, or fetch.")
         end
@@ -69,14 +78,18 @@ module BinDeps
 
     @unix_only begin
         function unpack_cmd(file,directory,extension,secondary_extension)
-            if(extension == ".gz" && secondary_extension == ".tar") || extension == ".tgz"
+            if ((extension == ".gz" || extension == ".Z") && secondary_extension == ".tar") || extension == ".tgz"
                 return (`tar xzf $file --directory=$directory`)
-            elseif(extension == ".bz2" && secondary_extension == ".tar") || extension == ".tbz"
+            elseif (extension == ".bz2" && secondary_extension == ".tar") || extension == ".tbz"
                 return (`tar xjf $file --directory=$directory`)
-            elseif(extension == ".xz" && secondary_extension == ".tar")
-                return (`unxz -c $file `|>`tar xv --directory=$directory`)
-            elseif(extension == ".zip")
+            elseif extension == ".xz" && secondary_extension == ".tar"
+                return pipeline(`unxz -c $file `, `tar xv --directory=$directory`)
+            elseif extension == ".tar"
+                return (`tar xf $file --directory=$directory`)
+            elseif extension == ".zip"
                 return (`unzip -x $file -d $directory`)
+            elseif extension == ".gz"
+                return pipeline(`mkdir $directory`, `cp $file $directory`, `gzip -d $directory/$file`)
             end
             error("I don't know how to unpack $file")
         end
@@ -84,9 +97,9 @@ module BinDeps
 
     @windows_only begin
         function unpack_cmd(file,directory,extension,secondary_extension)
-            if((extension == ".gz" || extension == ".xz" || extension == ".bz2") && secondary_extension == ".tar") ||
-                   extension == ".tgz" || extension == ".tbz"
-                return (`7z x $file -y -so`|>`7z x -si -y -ttar -o$directory`)
+            if((extension == ".Z" || extension == ".gz" || extension == ".xz" || extension == ".bz2") &&
+                   secondary_extension == ".tar") || extension == ".tgz" || extension == ".tbz"
+                return pipeline(`7z x $file -y -so`, `7z x -si -y -ttar -o$directory`)
             elseif extension == ".zip" || extension == ".7z"
                 return (`7z x $file -y -o$directory`)
             end
@@ -96,74 +109,80 @@ module BinDeps
 
     type SynchronousStepCollection
         steps::Vector{Any}
-        cwd::String
-        oldcwd::String
-        SynchronousStepCollection(cwd) = new({},cwd,cwd)
-        SynchronousStepCollection() = new({},"","")
+        cwd::AbstractString
+        oldcwd::AbstractString
+        SynchronousStepCollection(cwd) = new(Any[],cwd,cwd)
+        SynchronousStepCollection() = new(Any[],"","")
     end
 
     import Base.push!, Base.run, Base.(|)
     push!(a::SynchronousStepCollection,args...) = push!(a.steps,args...)
 
     type ChangeDirectory <: BuildStep
-        dir::String
+        dir::AbstractString
     end
 
     type CreateDirectory <: BuildStep
-        dest::String
+        dest::AbstractString
         mayexist::Bool
         CreateDirectory(dest, me) = new(dest,me)
         CreateDirectory(dest) = new(dest,true)
     end
 
     immutable RemoveDirectory <: BuildStep
-        dest::String
+        dest::AbstractString
     end
 
     type FileDownloader <: BuildStep
-        src::String     #url
-        dest::String    #local_file
+        src::AbstractString     #url
+        dest::AbstractString    #local_file
+    end
+
+    type ChecksumValidator <: BuildStep
+        sha::AbstractString
+        path::AbstractString
     end
 
     type FileUnpacker <: BuildStep
-        src::String     #file
-        dest::String    #directory
-        target::String  #file inside the archive to test for existence (or blank to check for a.tgz => a/)
+        src::AbstractString     #file
+        dest::AbstractString    #directory
+        target::AbstractString  #file or directory inside the archive to test
+                        #for existence (or blank to check for a.tgz => a/)
     end
 
 
     type MakeTargets <: BuildStep
-    	dir::String
-    	targets::Vector{ASCIIString}
+        dir::AbstractString
+        targets::Vector{ASCIIString}
         env::Dict
-    	MakeTargets(dir,target;env = (String=>String)[]) = new(dir,target,env)
-    	MakeTargets(target::Vector{ASCIIString};env = (String=>String)[]) = new("",target,env)
-    	MakeTargets(target::ASCIIString;env = (String=>String)[]) = new("",[target],env)
-    	MakeTargets(;env = (String=>String)[]) = new("",ASCIIString[],env)
+        MakeTargets(dir,target;env = Dict{AbstractString,AbstractString}()) = new(dir,target,env)
+        MakeTargets(target::Vector{ASCIIString};env = Dict{AbstractString,AbstractString}()) = new("",target,env)
+        MakeTargets(target::ASCIIString;env = Dict{AbstractString,AbstractString}()) = new("",[target],env)
+        MakeTargets(;env = Dict{AbstractString,AbstractString}()) = new("",ASCIIString[],env)
     end
 
     type AutotoolsDependency <: BuildStep
-        src::String     #src direcory
-        prefix::String
-        builddir::String
-        configure_options::Vector{String}
-        libtarget::Vector{String}
-        include_dirs::Vector{String}
-        lib_dirs::Vector{String}
-        rpath_dirs::Vector{String}
+        src::AbstractString     #src direcory
+        prefix::AbstractString
+        builddir::AbstractString
+        configure_options::Vector{AbstractString}
+        libtarget::Vector{AbstractString}
+        include_dirs::Vector{AbstractString}
+        lib_dirs::Vector{AbstractString}
+        rpath_dirs::Vector{AbstractString}
         installed_libpath::Vector{ByteString} # The library is considered installed if any of these paths exist
-    	config_status_dir::String
+    	config_status_dir::AbstractString
         force_rebuild::Bool
         env
-        AutotoolsDependency(;srcdir::String = "", prefix = "", builddir = "", configure_options=String[], libtarget = String[], include_dirs=String[], lib_dirs=String[], rpath_dirs=String[], installed_libpath = ByteString[], force_rebuild=false, config_status_dir = "", env = Dict{ByteString,ByteString}()) = 
-            new(srcdir,prefix,builddir,configure_options,isa(libtarget,Vector)?libtarget:String[libtarget],include_dirs,lib_dirs,rpath_dirs,installed_libpath,config_status_dir,force_rebuild,env)
+        AutotoolsDependency(;srcdir::AbstractString = "", prefix = "", builddir = "", configure_options=AbstractString[], libtarget = AbstractString[], include_dirs=AbstractString[], lib_dirs=AbstractString[], rpath_dirs=AbstractString[], installed_libpath = ByteString[], force_rebuild=false, config_status_dir = "", env = Dict{ByteString,ByteString}()) = 
+            new(srcdir,prefix,builddir,configure_options,isa(libtarget,Vector)?libtarget:AbstractString[libtarget],include_dirs,lib_dirs,rpath_dirs,installed_libpath,config_status_dir,force_rebuild,env)
     end
 
     ### Choices
 
     type Choice
         name::Symbol
-        description::String
+        description::AbstractString
         step::SynchronousStepCollection
         Choice(name,description,step) = (s=SynchronousStepCollection();lower(step,s);new(name,description,s))
     end 
@@ -197,8 +216,8 @@ module BinDeps
     end
 
     type CCompile <: BuildStep
-        srcFile::String
-        destFile::String
+        srcFile::AbstractString
+        destFile::AbstractString
         options::Vector{ASCIIString}
         libs::Vector{ASCIIString}
     end
@@ -207,7 +226,12 @@ module BinDeps
     ##
 
     type DirectoryRule <: BuildStep
-        dir::String
+        dir::AbstractString
+        step
+    end
+
+    type PathRule <: BuildStep
+        path::AbstractString
         step
     end
 
@@ -289,14 +313,14 @@ module BinDeps
 
     # Create any of these files
     type FileRule <: BuildStep
-        file::Array{String}
+        file::Array{AbstractString}
         step
-        FileRule(file::String,step) = FileRule(String[file],step)
-    	function FileRule(files::Vector{String},step) 
+        FileRule(file::AbstractString,step) = FileRule(AbstractString[file],step)
+        function FileRule(files::Vector{AbstractString},step)
             new(files,@build_steps (step,) )
-    	end
+        end
     end
-    FileRule{T<:String}(files::Vector{T},step) = FileRule(String[f for f in files],step)
+    FileRule{T<:AbstractString}(files::Vector{T},step) = FileRule(AbstractString[f for f in files],step)
 
     function lower(s::ChangeDirectory,collection)
         if(!isempty(collection.steps))
@@ -304,14 +328,15 @@ module BinDeps
         end
         collection.cwd = s.dir
     end
-    lower(s::Nothing,collection) = nothing
+    @compat lower(s::Void,collection) = nothing
     lower(s::Function,collection) = push!(collection,s)
     lower(s::CreateDirectory,collection) = @dependent_steps ( DirectoryRule(s.dest,()->(mkpath(s.dest))), )
     lower(s::RemoveDirectory,collection) = @dependent_steps ( `rm -rf $(s.dest)` )
     lower(s::BuildStep,collection) = push!(collection,s)
     lower(s::Base.AbstractCmd,collection) = push!(collection,s)
     lower(s::FileDownloader,collection) = @dependent_steps ( CreateDirectory(dirname(s.dest),true), ()->info("Downloading file $(s.src)"), FileRule(s.dest,download_cmd(s.src,s.dest)), ()->info("Done downloading file $(s.src)") )
-    function splittarpath(path) 
+    lower(s::ChecksumValidator,collection) = isempty(s.sha) || @dependent_steps ()->sha_check(s.path, s.sha)
+    function splittarpath(path)
         path,extension = splitext(path)
         base_filename,secondary_extension = splitext(path)
         if extension == ".tgz" || extension == ".tbz" || extension == ".zip" && !isempty(secondary_extension)
@@ -325,7 +350,7 @@ module BinDeps
         target = !isempty(s.target) ? s.target : basename(base_filename)
         @dependent_steps begin
             CreateDirectory(dirname(s.dest),true)
-            DirectoryRule(joinpath(s.dest,target),unpack_cmd(s.src,s.dest,extension,secondary_extension))
+            PathRule(joinpath(s.dest,target),unpack_cmd(s.src,s.dest,extension,secondary_extension))
         end
     end
 
@@ -430,6 +455,18 @@ module BinDeps
     		info("Directory $(s.dir) already created")
         end
     end
+
+    function run(s::PathRule)
+        if !ispath(s.path)
+            run(s.step)
+            if !ispath(s.path)
+                error("Path $(s.path) was not created successfully (Tried to run $(s.step) )")
+            end
+        else
+            info("Path $(s.path) already created")
+        end
+    end
+
     function run(s::BuildStep)
         error("Unimplemented BuildStep: $(typeof(s))")
     end
