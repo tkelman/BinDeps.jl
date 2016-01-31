@@ -773,29 +773,51 @@ function satisfy!(deps::LibraryGroup, methods = defaults)
 end
 
 function satisfy!(dep::LibraryDependency, methods = defaults)
+@show dep
+@show methods
     sp = map(x->typeof(x[1][1]),_find_library(dep))
+    @show sp
     if !isempty(sp)
         for m in methods
+        @show m
             for s in sp
+            @show s
+            @show s <: m
+            @show s <: SystemPaths
                 if s <: m || s <: SystemPaths
                     return s
                 end
             end
         end
     end
+    @show applicable(dep)
     if !applicable(dep)
         return
     end
     for method in methods
+    @show method
         for (p,opts) in getallproviders(dep,method)
+        @show p
+        @show opts
+        @show can_provide(p,opts,dep)
             can_provide(p,opts,dep) || continue
+            @show haskey(opts,:force_depends)
             if haskey(opts,:force_depends)
                 for (dmethod,ddep) in opts[:force_depends]
+                @show dmethod
+                @show ddep
                     (dp,dopts) = getallproviders(ddep,dmethod)[1]
+                    @show dp
+                    @show dopts
+                    @show generate_steps(ddep,dp,dopts)
+                    @show lower(generate_steps(ddep,dp,dopts))
                     run(lower(generate_steps(ddep,dp,dopts)))
                 end
             end
+            @show generate_steps(dep,dp,dopts)
+            @show lower(generate_steps(dep,dp,dopts))
             run(lower(generate_steps(dep,p,opts)))
+            @show issatisfied(dep)
             !issatisfied(dep) && error("Provider $method failed to satisfy dependency $(dep.name)")
             return p
         end
